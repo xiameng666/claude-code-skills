@@ -1,0 +1,24 @@
+*.lock
+.idea/
+.venv/
+.cursor/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.class
+.venv
+jeb_mcp.egg-info
+*.DS_Store
+
+# Knowledge base (user data)
+knowledge/*.db
+knowledge/notes/*
+knowledge/reports/*
+knowledge/logs/
+knowledge/imports/
+
+# Keep structure files
+!knowledge/.gitkeep
+!knowledge/notes/.gitkeep
+!knowledge/reports/.gitkeep
