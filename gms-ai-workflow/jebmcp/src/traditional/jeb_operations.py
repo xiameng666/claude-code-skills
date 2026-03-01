@@ -25,7 +25,17 @@ from traditional.utils.signature_utils import convert_class_signature
 from traditional.utils.protoParser import ProtoParser
 class JebOperations(object):
     """Handles all JEB-specific operations for APK/DEX analysis"""
-    
+
+    # 排除的系统类前缀
+    EXCLUDE_PREFIXES = [
+        'Landroid/', 'Landroidx/', 'Lkotlin/', 'Lkotlinx/',
+        'Ljava/', 'Ljavax/', 'Ldalvik/',
+        'Lorg/intellij/', 'Lorg/jetbrains/',
+        'Lokhttp3/', 'Lretrofit2/', 'Lio/reactivex/',
+        'Lcom/squareup/', 'Lcom/bumptech/', 'Lorg/apache/', 'Lorg/json/',
+        'Lsun/', 'Lcom/sun/',
+    ]
+
     def __init__(self, project_manager, ctx=None):
         self.project_manager = project_manager
         self.ctx = ctx
@@ -908,6 +918,69 @@ class JebOperations(object):
         """Unload all projects from JEB"""
         return self.project_manager.unload_projects()
 
+    def _should_skip_class(self, signature):
+        """检查是否应该跳过该类（系统类）"""
+        for prefix in self.EXCLUDE_PREFIXES:
+            if signature.startswith(prefix):
+                return True
+        return False
+
+    def _extract_class_info(self, cls):
+        """提取类信息（复用 ExportDeps.py 逻辑）"""
+        sig = cls.getSignature(True)
+        info = {
+            'signature': sig,
+            'name': cls.getName(True),
+            'accessFlags': cls.getAccessFlags(),
+            'supertype': None,
+            'interfaces': [],
+            'fields': [],
+            'methods': [],
+        }
+
+        try:
+            info['supertype'] = cls.getSupertypeSignature(True)
+        except:
+            pass
+
+        try:
+            for iface in cls.getInterfaceSignatures(True):
+                info['interfaces'].append(iface)
+        except:
+            pass
+
+        for f in cls.getFields():
+            try:
+                info['fields'].append({
+                    'name': f.getName(True),
+                    'type': f.getFieldTypeSignature(True),
+                    'accessFlags': f.getAccessFlags(),
+                })
+            except:
+                pass
+
+        for m in cls.getMethods():
+            try:
+                mi = {'name': m.getName(True), 'accessFlags': m.getGenericFlags()}
+                try:
+                    rt = m.getReturnType()
+                    if rt:
+                        mi['returnType'] = rt.getSignature()
+                except:
+                    pass
+                try:
+                    params = m.getParameterTypes()
+                    if params:
+                        mi['paramTypes'] = [p.getSignature() for p in params]
+                except:
+                    pass
+                info['methods'].append(mi)
+            except:
+                pass
+
+        return info
+
+
 class GenericFlagParser:
     """解析 ICodeItem.getGenericFlags() 返回值，将其转换为可读标志列表"""
 
@@ -948,3 +1021,99 @@ class GenericFlagParser:
         """
         active = [name for bit, name in cls.FLAGS.items() if value & bit]
         return {"value": value, "flags": active}
+
+    def export_dependencies(self, output_path=None):
+        """
+        Export class hierarchy (extends/implements) to JSON file.
+        Ported from ExportDeps.py script.
+        :param output_path: Output JSON file path (default: ~/jeb-deps.json)
+        :return: dict with success, output_path, class_count, error
+        """
+        import os
+        from com.pnfsoftware.jeb.core.units.code.android import IDexUnit
+
+        project = self.project_manager.get_current_project()
+        if project is None:
+            return {"success": False, "error": "No project currently loaded in JEB"}
+
+        if output_path is None:
+            output_path = os.path.join(os.path.expanduser('~'), 'jeb-deps.json')
+
+        result = {'classes': []}
+        class_count = 0
+
+        for dex in project.findUnits(IDexUnit):
+            for cls in dex.getClasses():
+                sig = cls.getSignature(True)
+                if self._skip_system_class(sig):
+                    continue
+                try:
+                    result['classes'].append(self._extract_class_info(cls))
+                    class_count += 1
+                except Exception as e:
+                    print('[!] %s: %s' % (sig, e))
+
+        try:
+            with open(output_path, 'w') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            print('[+] Done! %d classes -> %s' % (class_count, output_path))
+            return {"success": True, "output_path": output_path, "class_count": class_count}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _skip_system_class(self, sig):
+        """Check if class should be skipped (system class)"""
+        for p in self.EXCLUDE_PREFIXES:
+            if sig.startswith(p):
+                return True
+        return False
+
+    def _extract_class_info(self, cls):
+        """Extract class information for export"""
+        sig = cls.getSignature(True)
+        info = {
+            'signature': sig,
+            'name': cls.getName(True),
+            'accessFlags': cls.getAccessFlags(),
+            'supertype': None,
+            'interfaces': [],
+            'fields': [],
+            'methods': [],
+        }
+        try:
+            info['supertype'] = cls.getSupertypeSignature(True)
+        except:
+            pass
+        try:
+            for iface in cls.getInterfaceSignatures(True):
+                info['interfaces'].append(iface)
+        except:
+            pass
+        for f in cls.getFields():
+            try:
+                info['fields'].append({
+                    'name': f.getName(True),
+                    'type': f.getFieldTypeSignature(True),
+                    'accessFlags': f.getAccessFlags(),
+                })
+            except:
+                pass
+        for m in cls.getMethods():
+            try:
+                mi = {'name': m.getName(True), 'accessFlags': m.getGenericFlags()}
+                try:
+                    rt = m.getReturnType()
+                    if rt:
+                        mi['returnType'] = rt.getSignature()
+                except:
+                    pass
+                try:
+                    params = m.getParameterTypes()
+                    if params:
+                        mi['paramTypes'] = [p.getSignature() for p in params]
+                except:
+                    pass
+                info['methods'].append(mi)
+            except:
+                pass
+        return info

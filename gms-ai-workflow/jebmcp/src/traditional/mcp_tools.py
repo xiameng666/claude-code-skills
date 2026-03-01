@@ -291,3 +291,17 @@ def register_tools(mcp, jeb_call):
             {success, summary, failed_operations}
         """
         return jeb_call('rename_batch_symbols', rename_operations)
+
+    # ==================== 初始化工具 ====================
+
+    @mcp.tool()
+    def export_dependencies(output_path: str = None):
+        """导出 JEB 项目中所有类的依赖关系到 JSON 文件。
+
+        Args:
+            output_path: 输出 JSON 文件路径（默认 ~/jeb-deps.json）
+
+        Returns:
+            {success, output_path, class_count, error}
+        """
+        return jeb_call('export_dependencies', output_path)

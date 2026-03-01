@@ -43,6 +43,139 @@ def register_tools(mcp, jeb_call, get_rename_sync, reset_rename_sync):
     """
 
     # ============================================================
+    #  智能初始化工具
+    # ============================================================
+
+    @mcp.tool()
+    def check_workflow_status(knowledge_dir: str = None):
+        """检查工作流状态，判断是否需要初始化。
+
+        Args:
+            knowledge_dir: 知识库目录（可选）
+
+        Returns:
+            {status, jeb_connected, knowledge_initialized, has_classes, next_step}
+        """
+        result = {
+            "status": "unknown",
+            "jeb_connected": False,
+            "knowledge_initialized": False,
+            "has_classes": False,
+            "next_step": None,
+            "details": {}
+        }
+
+        # 1. 检查 JEB 连接
+        try:
+            jeb_status = jeb_call('ping')
+            result["jeb_connected"] = "Successfully" in str(jeb_status) or jeb_status.get("success", False)
+
+            if result["jeb_connected"]:
+                project_info = jeb_call('has_projects')
+                result["details"]["has_jeb_project"] = project_info.get("has_projects", False)
+        except Exception as e:
+            result["details"]["jeb_error"] = str(e)
+            result["next_step"] = "请在 JEB 中启动 MCP 服务 (Edit -> Scripts -> MCP)"
+            return result
+
+        # 2. 检查知识库
+        try:
+            sync = get_rename_sync() if knowledge_dir is None else RenameSync(knowledge_dir)
+            result["knowledge_initialized"] = os.path.exists(sync.db_path)
+            result["details"]["db_path"] = sync.db_path
+            result["details"]["notes_dir"] = sync.notes_dir
+
+            if result["knowledge_initialized"]:
+                stats = sync.get_stats()
+                result["has_classes"] = stats.get("class_count", 0) > 0
+                result["details"]["class_count"] = stats.get("class_count", 0)
+        except Exception as e:
+            result["details"]["knowledge_error"] = str(e)
+            result["next_step"] = "初始化知识库: init_knowledge_base(knowledge_dir)"
+            return result
+
+        # 3. 确定状态和下一步
+        if not result["knowledge_initialized"]:
+            result["status"] = "need_init"
+            result["next_step"] = "初始化知识库: init_knowledge_base(knowledge_dir)"
+        elif not result["has_classes"]:
+            result["status"] = "need_import"
+            result["next_step"] = "导出并导入类: export_dependencies() + import_from_jeb_json()"
+        else:
+            result["status"] = "ready"
+            result["next_step"] = "可以开始分析类"
+
+        return result
+
+    @mcp.tool()
+    def smart_initialize(knowledge_dir: str, project_name: str = "GMS", auto_export: bool = True):
+        """智能初始化工作流 - 一键完成所有初始化步骤。
+
+        此工具会自动：
+        1. 初始化知识库目录结构
+        2. 从 JEB 导出类依赖
+        3. 导入到知识库
+
+        Args:
+            knowledge_dir: 知识库绝对路径
+            project_name: 项目名称
+            auto_export: 是否自动从 JEB 导出（默认 True）
+
+        Returns:
+            {success, steps_completed, steps_failed, details}
+        """
+        steps_completed = []
+        steps_failed = []
+        details = {}
+
+        # Step 1: 初始化知识库
+        try:
+            init_result = RenameSync.init_knowledge_base(knowledge_dir, project_name)
+            if init_result.get("success"):
+                steps_completed.append("init_knowledge_base")
+                details["knowledge_dir"] = knowledge_dir
+                details["db_path"] = init_result.get("db_path")
+            else:
+                steps_failed.append(("init_knowledge_base", init_result.get("error", "Unknown error")))
+        except Exception as e:
+            steps_failed.append(("init_knowledge_base", str(e)))
+
+        # 设置为当前知识库
+        os.environ["KNOWLEDGE_DIR"] = knowledge_dir
+        reset_rename_sync()
+
+        # Step 2: 从 JEB 导出（如果启用）
+        if auto_export:
+            try:
+                export_result = jeb_call('export_dependencies')
+                if export_result.get("success"):
+                    steps_completed.append("export_dependencies")
+                    json_path = export_result.get("output_path")
+                    details["exported_classes"] = export_result.get("class_count")
+                    details["json_path"] = json_path
+
+                    # Step 3: 导入到知识库
+                    sync = get_rename_sync()
+                    import_result = sync.import_from_jeb_json(json_path)
+                    if import_result.get("success") or import_result.get("imported", 0) > 0:
+                        steps_completed.append("import_from_jeb_json")
+                        details["imported_classes"] = import_result.get("imported", 0)
+                    else:
+                        steps_failed.append(("import_from_jeb_json", import_result.get("error", "No classes imported")))
+                else:
+                    steps_failed.append(("export_dependencies", export_result.get("error", "Export failed")))
+            except Exception as e:
+                steps_failed.append(("export_dependencies", str(e)))
+
+        return {
+            "success": len(steps_failed) == 0,
+            "steps_completed": steps_completed,
+            "steps_failed": steps_failed,
+            "details": details,
+            "message": "初始化完成: %d 步骤成功, %d 步骤失败" % (len(steps_completed), len(steps_failed))
+        }
+
+    # ============================================================
     #  带文件系统同步的重命名工具
     # ============================================================
 
@@ -144,10 +277,22 @@ def register_tools(mcp, jeb_call, get_rename_sync, reset_rename_sync):
 
         Args:
             rename_operations: JSON 数组，元素包含 type/old_name/new_name
+                - type: "class" | "method" | "field"
+                - old_name: "类名.符号名" 格式（如 "fvxn.a", "fvxn.B"）
+                  * 类名使用简短名（不含包路径），如 "fvxn" 而非 "Lfvxn;"
+                  * 方法只需方法名，不需要签名（如 "fvxn.a" 而非 "fvxn.a(J)V"）
+                  * 字段只需字段名（如 "fvxn.B"）
+                - new_name: 新名称
             note: 备注说明
 
         Returns:
             {success, jeb_result, sync_results, total_synced}
+
+        示例:
+            [
+              {"type": "method", "old_name": "fvxn.a", "new_name": "onLocationUpdate"},
+              {"type": "field", "old_name": "fvxn.B", "new_name": "locationCallback"}
+            ]
         """
         sync = get_rename_sync()
 

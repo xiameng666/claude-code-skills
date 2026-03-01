@@ -3,443 +3,358 @@ name: gms-ai-workflow
 description: 当用户要求 "分析类" "逆向分析GMS" "JEB分析" "使用JEBMCP分析" 时使用此 skill
 ---
 
-# GMS 逆向分析 AI Workflow Skill
+# GMS 逆向分析 AI Workflow
 
-## 触发条件
+## 概述
 
-当用户要求分析 GMS/APK 中的类、模块、功能时使用此 skill。
-典型场景：类身份识别、字段重命名、方法重命名、模块分析、报告生成。
+此 skill 提供完整的 GMS 逆向分析工作流，包括初始化知识库和分析类。
 
----
+## 快速开始
 
-## 一键安装
+### 1. 初始化知识库
 
-### Windows
+当用户请求初始化时，AI **必须**使用 `AskUserQuestion` 工具询问知识库目录：
 
-```powershell
-cd C:\Users\你的用户名\.claude\skills\gms-ai-workflow
-.\install.ps1
+```
+AI: 请选择知识库存储位置
+    选项1: C:\Users\{用户名}\Documents\gms-knowledge (推荐)
+    选项2: C:\Users\{用户名}\gms-knowledge
+    选项3: 自定义路径 (用户输入)
 ```
 
-### macOS / Linux
+AI 将执行：
+1. 检查 JEB MCP 连接
+2. 创建知识库目录结构
+3. 初始化 SQLite 数据库
 
-```bash
-cd ~/.claude/skills/gms-ai-workflow
-chmod +x install.sh
-./install.sh
+### 2. 手动导出 JEB 类依赖
+
+在 JEB 中运行：
+1. `File → Scripts → Run Script...`
+2. 选择：`{skill_dir}/scripts/ExportDeps.py`
+3. 输出路径设置为：`{knowledge_dir}/imports/jeb-deps.json`
+
+### 3. 导入到知识库
+
+```
+用户: 导入 JSON 到知识库
 ```
 
-### 跨平台 (Python)
+### 4. 分析类
 
-```bash
-python install.py
+```
+用户: 分析类 Lfvxn;
 ```
 
-### 卸载
+## 目录结构
 
-```bash
-python install.py --uninstall
+```
+gms-knowledge/
+├── gms-rename.db      # SQLite 数据库
+├── notes/             # 分析笔记 (MD 文件)
+├── reports/           # 分析报告
+├── imports/           # 导入数据 (jeb-deps.json)
+└── logs/              # 日志文件
 ```
 
-### 手动配置
+## 初始化流程
 
-如果自动脚本失败，手动添加到 Claude 配置文件：
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 1: 交互式询问                                            │
+│  - 使用 AskUserQuestion 询问知识库目录                          │
+│  - 提供推荐选项和自定义输入                                     │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 2: 检查环境                                              │
+│  - ping JEB MCP 服务                                            │
+│  - 检查是否有已加载的项目                                       │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 3: 创建知识库                                            │
+│  - 调用 init_knowledge_base() 创建目录结构                      │
+│  - 创建 SQLite 数据库                                           │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 4: 手动导出 (用户操作)                                   │
+│  - 在 JEB 中运行 ExportDeps.py                                  │
+│  - 将 JSON 放到 imports/ 目录                                   │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 5: 导入知识库                                            │
+│  - 调用 import_from_jeb_json() 导入到 SQLite                    │
+│  - 创建 MD 分析文件                                             │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-**配置文件位置**:
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Linux: `~/.config/Claude/claude_desktop_config.json`
+### AskUserQuestion 示例
 
-**添加内容**:
 ```json
 {
-  "mcpServers": {
-    "jeb-mcp": {
-      "command": "python",
-      "args": ["C:\\path\\to\\jebmcp\\src\\server.py"],
-      "env": {
-        "JEB_HOST": "127.0.0.1",
-        "JEB_PORT": "16161",
-        "JEB_PATH": "/mcp"
-      }
-    }
-  }
+  "questions": [{
+    "question": "请选择知识库存储位置：",
+    "header": "知识库路径",
+    "options": [
+      {"label": "文档目录 (推荐)", "description": "C:\\Users\\{用户名}\\Documents\\gms-knowledge"},
+      {"label": "用户目录", "description": "C:\\Users\\{用户名}\\gms-knowledge"},
+      {"label": "自定义路径", "description": "手动输入完整路径"}
+    ]
+  }]
 }
 ```
 
----
+## 自动化分析脚本
 
-## 前置条件
+### 使用方法
 
-- JEB Pro 已打开目标 APK/DEX 文件
-- JEB MCP Server 已启动（Edit -> Scripts -> MCP，快捷键 Ctrl+Alt+M）
-- Claude Desktop 已重启（安装后）
-
----
-
-## 核心架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  AI Workflow (本 Skill)                                     │
-│  - 定义分析流程、最佳实践                                    │
-│  - 指导 AI 如何组合使用 MCP 工具                             │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ 调用
-┌─────────────────────────────────────────────────────────────┐
-│  MCP Tools (原子操作)                                       │
-│  - get_class_decompiled_code: 获取反编译代码                │
-│  - rename_class_with_sync: 重命名类并同步                   │
-│  - create_session_report: 生成报告                          │
-│  - ...                                                      │
-└─────────────────────────────────────────────────────────────┘
+```bash
+python scripts/gms-analyze-loop.py --seed Lfvxn; --knowledge-dir C:\Users\xxx\gms-knowledge
 ```
 
----
-
-## 可用工具映射
-
-### 1. 信息获取工具
-
-| 需求 | MCP 工具 | 说明 |
-|------|----------|------|
-| 获取反编译代码 | `get_class_decompiled_code` | 获取 Java 伪代码 |
-| 获取方法列表 | `get_class_methods` | 所有方法签名 |
-| 获取字段列表 | `get_class_fields` | 所有字段信息 |
-| 获取接口列表 | `get_class_interfaces` | 实现的接口 |
-| 获取类型树 | `get_class_type_tree` | 继承关系 |
-| 获取方法调用者 | `get_method_callers` | 谁调用了此方法 |
-| 获取字段调用者 | `get_field_callers` | 谁引用了此字段 |
-
-### 2. 重命名工具
-
-| 需求 | MCP 工具 | 说明 |
-|------|----------|------|
-| 重命名类 | `rename_class_with_sync` | JEB + SQLite + MD 同步 |
-| 重命名方法 | `rename_method` | JEB + SQLite 同步 |
-| 重命名字段 | `rename_field` | JEB + SQLite 同步 |
-| 批量重命名 | `rename_batch_with_sync` | 批量操作 |
-
-### 3. 知识库工具
-
-| 需求 | MCP 工具 | 说明 |
-|------|----------|------|
-| 初始化知识库 | `init_knowledge_base` | 创建目录结构 |
-| 设置知识库路径 | `set_knowledge_dir` | 切换知识库 |
-| 导入 JEB 数据 | `import_from_jeb_json` | 批量导入类信息 |
-| 获取统计信息 | `get_analysis_stats` | 分析进度 |
-
-### 4. 分析报告工具
-
-| 需求 | MCP 工具 | 说明 |
-|------|----------|------|
-| 准备模块上下文 | `prepare_module_context` | 获取已分析信息 |
-| 生成模块报告 | `generate_module_report` | 模块级报告 |
-| 生成会话报告 | `create_session_report` | 会话总结 |
-
----
-
-## 完整分析流程
-
-### Phase 0: 初始化（首次使用）
-
-**目标**：确保知识库已正确初始化。
+### 审查通过判定标准
 
 ```
-1. 检查知识库状态
-   → get_analysis_stats()
-   → 如果 total_classes == 0，需要初始化
-
-2. 初始化知识库（如果需要）
-   → init_knowledge_base(knowledge_dir, project_name)
-
-3. 导入 JEB 类信息（如果需要）
-   → 在 JEB 中运行 ExportDeps.py 导出 JSON
-   → import_from_jeb_json(json_path)
+┌─────────────────────────────────────────────────────────────────┐
+│  Agent B 审查通过条件                                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ✓ 通过：reported_deps ⊇ actual_deps                           │
+│    - Agent A 报告的依赖 包含 代码中实际的所有依赖         │
+│                                                                 │
+│  ✗ 不通过：存在 missing = actual_deps - reported_deps           │
+│    - 发现遗漏的依赖，需要补充                                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Phase 1: 类身份识别
+### 依赖去重机制
 
-**目标**：确定类的真实名称和用途。
+```python
+class AnalysisQueue:
+    pending: deque      # 待分析队列
+    analyzed: Set[str]  # 已分析集合
+    in_queue: Set[str]  # 已入队集合
 
-```
-1. 获取反编译代码
-   → get_class_decompiled_code(class_signature)
+    def add(self, class_sig):
+        # 1. 跳过系统类 (Landroid/*, Ljava/*, etc.)
+        if is_system_class(class_sig):
+            return False
 
-2. 身份识别线索（按优先级）：
-   a. toString() 返回值 → "FusionEngine"
-   b. 类注解 → @Deprecated, @hide
-   c. 字符串常量 → "LocationProvider", "fused"
-   d. 实现的接口 → LocationListener, Callback
-   e. 依赖的类 → 已知的 GMS 类
+        # 2. 跳过已分析的类
+        if class_sig in self.analyzed:
+            return False
 
-3. 获取更多上下文
-   → get_class_interfaces(class_signature)
-   → get_class_methods(class_signature)
-   → get_class_fields(class_signature)
-```
+        # 3. 跳过已在队列中的类
+        if class_sig in self.in_queue:
+            return False
 
-**命名规范**：
-- 完整包名：`com.google.android.location.fused.FusionEngine`
-- 简短名称：`FusionEngine`
-
-### Phase 2: 类重命名
-
-**目标**：将混淆名重命名为真实名称。
-
-```
-→ rename_class_with_sync(class_name, new_name, note)
-
-注意：
-- note 参数记录重命名原因/证据
-- 会自动同步到 SQLite 数据库
-- 会自动创建/更新 MD 文件
+        # 4. 添加到队列
+        self.pending.append(class_sig)
+        self.in_queue.add(class_sig)
+        return True
 ```
 
-**类名格式支持**：
-| 输入格式 | 示例 | 自动转换 |
-|----------|------|----------|
-| JNI | `Lfvxn;` | 直接使用 |
-| Java | `com.example.Foo` | → `Lcom/example/Foo;` |
-| 简短 | `fvxn` | → `Lfvxn;` |
-
-### Phase 3: 字段分析
-
-**目标**：识别关键字段并重命名。
+### 检查点输出
 
 ```
-1. 获取字段列表
-   → get_class_fields(class_signature)
-
-2. 分析字段类型和用途：
-   - Location 类型 → 可能是位置缓存
-   - Context 类型 → 应用上下文
-   - Handler/Looper 类型 → 线程相关
-   - boolean 类型 → 状态标志
-
-3. 命名风格：
-   - 成员变量：mPrefix + 描述 (mLocationCache)
-   - 静态常量：UPPER_CASE (FLUSH_INTERVAL_MS)
-   - 布尔标志：is/has 前缀 (isRunning, hasRequest)
-
-4. 批量重命名字段
-   → rename_field(class_name, field_name, new_name, note)
+[进度] 迭代 1 | 分析: Lfvxn;
+[统计] 待处理: 0 | 已分析: 0
+[Agent A] 正在分析 Lfvxn;...
+[Agent B] 正在审查分析结果...
+[审查] ✓ 通过 - 审查通过，未发现遗漏
+[依赖] 发现 90 个 | 新入队: 90
+[保存] notes/fvxn.md
 ```
 
-### Phase 4: 方法分析
+## 分析流程
 
-**目标**：识别关键方法并重命名。
-
-```
-1. 获取方法列表
-   → get_class_methods(class_signature)
-
-2. 分析方法特征：
-   - 参数类型 → Location, Bundle, Callback
-   - 返回值 → void, boolean, Location
-   - 调用者 → get_method_callers() 了解用途
-
-3. 命名推断：
-   - 回调方法：on 前缀 (onLocationUpdate, onProviderChanged)
-   - 获取方法：get 前缀 (getFusedLocation)
-   - 设置方法：set 前缀 (setUpdateInterval)
-   - 状态检查：is/has 前缀 (hasActiveRequest)
-
-4. 重命名方法
-   → rename_method(class_name, method_sig, new_name, note)
-
-注意：method_sig 需要完整签名，如：
-   - "a(J)V" → 单参数
-   - "a(JLgpvs;)V" → 多参数
-```
-
-### Phase 5: 接口分析
-
-**目标**：分析类实现的接口。
+### ⚠️ 强制规则 - 图论构造
 
 ```
-1. 获取接口列表
-   → get_class_interfaces(class_signature)
-
-2. 分析每个接口：
-   - 获取接口的方法定义
-   - 推断接口用途
-   - 重命名接口
-
-3. 常见 GMS 接口模式：
-   | 接口后缀 | 用途 |
-   |----------|------|
-   | Listener | 事件回调 |
-   | Callback | 异步回调 |
-   | Handler | 消息处理 |
-   | Provider | 服务提供者 |
-   | Manager | 资源管理 |
+┌─────────────────────────────────────────────────────────────────┐
+│  目标：构建以种子类为根的完整依赖图                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. 遍历范围：无深度限制，必须到达所有叶子节点                   │
+│                                                                 │
+│  2. 叶子节点定义：不依赖任何其他混淆类（出度为0）                │
+│                                                                 │
+│  3. 完成标准：连续 2 轮遍历未发现新的混淆类                      │
+│                                                                 │
+│  4. 排除规则：java.*, android.* 等框架类不入图                  │
+│                                                                 │
+│  5. 循环处理：检测到循环依赖时记录，但不中断遍历                 │
+│                                                                 │
+│  6. 持久化：每处理一个类，必须立即写入 MD 文件                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Phase 6: 关联分析
-
-**目标**：分析与当前类相关的其他类。
+### 检查点（每处理 N 个类必须输出）
 
 ```
-1. 分析字段类型中的未知类
-   → 如果字段类型是混淆名，分析该类
-
-2. 分析方法参数/返回值中的未知类
-
-3. 分析调用者
-   → get_method_callers(class_name, method_name)
-   → get_field_callers(class_name, field_name)
-
-4. 构建类关系图
+[进度] 已处理: X | 待处理: Y | 叶子节点: Z | 循环: C
 ```
 
-### Phase 7: 报告生成
-
-**目标**：记录分析结果。
+### ⚠️ 双 Agent 协作模式（强制）
 
 ```
-1. 创建会话报告
-   → create_session_report(
-       seed_class,           # 起始类
-       analyzed_classes,     # 分析过的类 JSON 数组
-       findings,             # 发现列表 JSON 数组
-       renames,              # 重命名列表 JSON 数组
-       issues,               # 问题列表 JSON 数组
-       next_steps            # 下一步 JSON 数组
-     )
-
-2. 生成模块报告（如果分析了多个相关类）
-   → generate_module_report(
-       module_name,          # 如 "gms/location"
-       classes,              # 类列表逗号分隔
-       structure             # mermaid 类图（可选）
-     )
+┌─────────────────────────────────────────────────────────────────┐
+│  Agent A：分析者                                                 │
+│  - 从任务队列获取待分析类                                        │
+│  - 调用 JEB MCP 获取类信息                                       │
+│  - 提取直接依赖（父类、接口、字段类型）← 不需要审查              │
+│  - 提取方法体依赖 ← 需要重点审查！                               │
+│  - 生成分析结果，提交给 Agent B 审阅                             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Agent B：审查者                                                 │
+│  - 重点审查方法体依赖是否遗漏                                    │
+│  - 审阅通过 → Agent A 继续下一个类                               │
+│  - 审阅不通过 → 说明遗漏项，Agent A 补充分析                     │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+                      从队列取下一个类
 ```
 
----
-
-## 分析决策树
+### 依赖分类（审查重点）
 
 ```
-开始分析类 X
-    │
-    ├─→ 知识库已初始化?
-    │       │
-    │       ├─→ 否 → init_knowledge_base()
-    │       │        → import_from_jeb_json()
-    │       │
-    │       └─→ 是 ↓
-    │
-    ├─→ 获取类信息
-    │       → get_class_decompiled_code()
-    │       → get_class_methods()
-    │       → get_class_fields()
-    │       → get_class_interfaces()
-    │
-    ├─→ 身份识别
-    │       │
-    │       ├─→ toString() 有信息? → 使用作为类名
-    │       │
-    │       ├─→ 实现已知接口? → 推断功能
-    │       │
-    │       └─→ 依赖已知类? → 推断模块
-    │
-    ├─→ 重命名
-    │       → rename_class_with_sync()
-    │       → rename_field() x N
-    │       → rename_method() x N
-    │
-    ├─→ 关联分析
-    │       │
-    │       ├─→ 字段类型是混淆类? → 添加到待分析列表
-    │       │
-    │       └─→ 方法调用者? → 理解使用场景
-    │
-    └─→ 生成报告
-            → create_session_report()
+┌─────────────────────────────────────────────────────────────────┐
+│  直接依赖（不需要审查 - 工具自动获取）                           │
+├─────────────────────────────────────────────────────────────────┤
+│  ✓ 父类 (get_class_superclass)                                  │
+│  ✓ 接口 (get_class_interfaces)                                  │
+│  ✓ 字段类型 (get_class_fields)                                  │
+│  ✓ 方法签名类型 (get_class_methods)                             │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  方法体依赖（需要审查 - 容易遗漏！）                             │
+├─────────────────────────────────────────────────────────────────┤
+│  ⭐ new 语句中的类型                                             │
+│  ⭐ 静态方法调用 (Xxx.a(), Xxx.b())                              │
+│  ⭐ 方法链调用中的类型                                           │
+│  ⭐ 类型转换 (Lxxx;) obj                                        │
+│  ⭐ Lambda/匿名类                                                │
+│  ⭐ instanceof 检查                                              │
+│  ⭐ 异常处理 (catch, throws)                                    │
+│  ⭐ 泛型类型参数                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 最佳实践
-
-### 1. 命名置信度
-
-| 置信度 | 条件 | 示例 |
-|--------|------|------|
-| **high** | toString()、注解、字符串明确 | `FusionEngine` (toString 返回) |
-| **medium** | 基于接口/依赖推断 | `LocationEngine` (实现 LocationListener) |
-| **low** | 纯粹猜测 | `Manager` (无明确线索) |
-
-### 2. MD 文件模板
-
-```markdown
----
-obfuscated: "Lfvxn;"
-renamed: "com.google.android.location.fused.FusionEngine"
-confidence: high
-tags: [location, fused-provider, engine, gms]
----
-
-## 业务功能
-
-<!-- 一句话描述 -->
-
-## 关键字段
-
-| 混淆 | 重命名 | 说明 |
-|------|--------|------|
-| e | lastGpsLocation | 最后GPS位置 |
-
-## 关联
-
-- [[gpus_LocationEngine]] - 核心引擎
-```
-
-### 3. 避免重复分析
+### 审阅检查项（Agent B 重点）
 
 ```
-开始前检查：
-→ prepare_module_context([class_name])
-→ 查看已有分析信息
-→ 避免重复工作
+Agent B 只需要审查方法体依赖是否遗漏：
+
+  1. new 语句是否全部提取？
+  2. 静态方法调用是否全部提取？
+  3. 类型转换是否全部提取？
+  4. Lambda/匿名类是否全部提取？
+  5. instanceof 检查是否全部提取？
+
+审阅结果：
+  - ✓ 通过 → Agent A 继续下一个类
+  - ✗ 不通过 → 说明遗漏的具体类型，Agent A 补充
 ```
 
----
+## 可用工具
 
-## 实战检查清单
+### 信息获取（必须全部调用）
 
-- [ ] 知识库已初始化
-- [ ] 已获取类反编译代码
-- [ ] 已识别类真实名称（有证据支持）
-- [ ] 已重命名类
-- [ ] 已分析并重命名关键字段
-- [ ] 已分析并重命名关键方法
-- [ ] 已分析实现的接口
-- [ ] 已识别关联类
-- [ ] 已生成会话报告
-- [ ] MD 文件已更新
+| 优先级 | 工具 | 说明 | 依赖来源 |
+|--------|------|------|----------|
+| ⭐⭐⭐ | `get_class_decompiled_code` | **方法体分析（最重要！）** | method_body |
+| ⭐⭐⭐ | `get_class_superclass` | 父类 | extends |
+| ⭐⭐⭐ | `get_class_interfaces` | 接口列表 | implements |
+| ⭐⭐ | `get_class_type_tree` | 完整继承链 | extends/implements |
+| ⭐⭐ | `get_class_fields` | 所有字段类型 | field_type |
+| ⭐⭐ | `get_class_methods` | 所有方法签名 | method_param/return |
 
----
+### 重命名
 
-## 常见问题
+| 工具 | 说明 |
+|------|------|
+| `rename_class_with_sync` | 重命名类 |
+| `rename_method` | 重命名方法 |
+| `rename_field` | 命名字段 |
 
-### Q: JEB 方法重命名失败？
+### 知识库
 
-A: 确保使用完整方法签名：
-- 错误：`a`
-- 正确：`a(J)V` 或 `a(Landroid/location/Location;)V`
+| 工具 | 说明 |
+|------|------|
+| `init_knowledge_base` | 初始化知识库目录 |
+| `set_knowledge_dir` | 设置知识库路径 |
+| `import_from_jeb_json` | 导入 JSON 到知识库 |
+| `get_analysis_stats` | 获取分析统计 |
+| `get_class_md_content` | 获取类 MD 内容 |
+| `create_session_report` | 创建分析报告 |
 
-### Q: 字段重命名格式错误？
+## 方法体分析（强制）
 
-A: 字段名不需要类前缀：
-- 错误：`Lfvxn;.e`
-- 正确：`e`
-
-### Q: 知识库统计为 0？
-
-A: 需要先导入 JEB 数据：
 ```
-1. JEB 中运行 ExportDeps.py
-2. import_from_jeb_json("~/jeb-deps.json")
+从 get_class_decompiled_code 结果中提取：
+
+1. new 语句
+   - new Lxxx;()
+   - new Lxxx;() { ... }  // 匿名类
+
+2. 方法调用
+   - Lxxx;.method()
+   - obj.method() 其中 obj 的类型
+
+3. 类型转换
+   - (Lxxx;) obj
+   - (Lxxx;) method()
+
+4. Lambda/函数式
+   - () -> { ... }
+   - Lxxx;::method
+
+5. 异常处理
+   - catch (Lxxx; e)
+   - throws Lxxx;
+
+禁止：
+  - 跳过方法体分析
+  - 只分析字段/方法签名
 ```
+
+## 输出格式
+
+```
+## 图论分析完成
+
+| 指标 | 值 |
+|------|-----|
+| 根节点 | Lfvxn; (FusionEngine) |
+| 总类数 | N |
+| 依赖边数 | M |
+| 叶子节点 | K |
+
+### 叶子节点列表
+- Lxxx;
+- Lyyy;
+
+### 生成的 MD 文件
+- notes/fvxn_FusionEngine.md
+- notes/xxx.md
+```
+
+## 参考文件
+
+- [rules/graph-theory.md](rules/graph-theory.md) - 图论规则定义
+- [templates/class-md-template.md](templates/class-md-template.md) - MD 文件格式
+- [templates/naming-conventions.md](templates/naming-conventions.md) - 命名规范
+
+## 注意事项
+
+1. **JEB 必须已启动 MCP 服务**：在 JEB 中执行 `Edit -> Scripts -> MCP`
+2. **项目必须已加载**：确保 APK/DEX 已在 JEB 中打开
+3. **路径使用绝对路径**：避免相对路径引起的混淆

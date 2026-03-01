@@ -8,8 +8,8 @@ import os
 
 # 获取当前脚本所在的目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 获取项目根目录（src的上级目录）
-project_root = os.path.dirname(os.path.dirname(current_dir))
+# 获取项目根目录（jebmcp目录，即src的上级目录）
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
 jar_path = os.path.join(project_root, "assets", "PBDecoder.jar")
 
 # 检查assets目录是否存在 PBDecoder.jar
